@@ -1,46 +1,48 @@
 import sys, pygame, math
+from world import World
+from gen import Generator
+from camera import Camera
+from controls import Controls
+from agent import DummyAgent
 pygame.init()
-
-size = width, height = 1280, 960
-speed = [2, 2]
-black = 0, 0, 0
-
 clock = pygame.time.Clock()
 
-screen = pygame.display.set_mode(size)
+size = width, height = 1280, 960
+screen = pygame.display.set_mode(size, pygame.RESIZABLE)
 
-rect = pygame.Rect(0, 0, 10, 10)
-
-tile_w, tile_h = 32, 32
-imgs = [pygame.Surface((tile_w, tile_h),) for i in range(10)]
+world = World(Generator())
+imgs = [pygame.Surface(world.tile_size) for i in range(10)]
 img_rects = [surf.fill((int(255 - 20 * n), 20 * n, 100),) for n, surf in enumerate(imgs)]
-
-camera = [0, 0]
+cam = Camera(world, imgs, (0, 0), size)
 cam_speed = 7
+frames_per_tick = 15
 
-while 1:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT: sys.exit()
+running = True
+def shutdown(event = None):
+    global running
+    running = False
+def window_resize(event):
+    global screen
+    screen = pygame.display.set_mode(event.size, pygame.RESIZABLE)
 
-    rect = rect.move(speed)
-    if rect.left < 0 or rect.right > width:
-        speed[0] = -speed[0]
-    if rect.top < 0 or rect.bottom > height:
-        speed[1] = -speed[1]
+controls = Controls()
+controls.on_event(pygame.QUIT, shutdown)
+controls.on_event(pygame.VIDEORESIZE, window_resize)
+controls.while_pressed(pygame.K_UP, lambda: cam.move_y(-cam_speed))
+controls.while_pressed(pygame.K_DOWN, lambda: cam.move_y(cam_speed))
+controls.while_pressed(pygame.K_LEFT, lambda: cam.move_x(-cam_speed))
+controls.while_pressed(pygame.K_RIGHT, lambda: cam.move_x(cam_speed))
+controls.while_pressed(pygame.K_ESCAPE, shutdown)
 
-    pressed = pygame.key.get_pressed()
-    if pressed[pygame.K_UP]: camera[1] -= cam_speed
-    if pressed[pygame.K_DOWN]: camera[1] += cam_speed
-    if pressed[pygame.K_LEFT]: camera[0] -= cam_speed
-    if pressed[pygame.K_RIGHT]: camera[0] += cam_speed
-    screen.fill(black)
-    cam_tile, cam_offset = zip(divmod(camera[0], tile_w), divmod(camera[1], tile_h))
-    for X in range(int(width / tile_w) + 1):
-        tile_x = cam_tile[0] + X
-        for Y in range(int(height / tile_h) + 1):
-            tile_y = cam_tile[1] + Y
-            screen.blit(imgs[(tile_x + tile_x*tile_y) % len(imgs)], (X * 32 - cam_offset[0],
-                                                                     Y * 32 - cam_offset[1]))
-    pygame.draw.rect(screen, pygame.Color('0x0061ff'), rect)
+idler = DummyAgent()
+world.add(idler)
+
+frame = 0
+while running:
+    controls.run()
+    frame += 1
+    if frame % frames_per_tick == 0:
+        world.step()
+    cam.draw_to(screen)
     pygame.display.flip()
     clock.tick(60)
