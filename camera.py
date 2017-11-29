@@ -1,5 +1,5 @@
 import world
-from common import Region, debugPrint
+from common import Region, debugPrint, regionDiff
 
 class Camera:
     def __init__(self, world, imgs, coords = (0, 0), centerin = (0, 0)):
@@ -29,17 +29,36 @@ class Camera:
             bx, by, bs, breg = self.buf
             surf.blit(bs, (bx - self.x, by - self.y))
             
-            for row in observer(vreg, ignoring = breg).rows():
-                for val, (x, y) in row.cells():
-                    surf.blit(self.imgs[val], ((x - tile[0]) * tile_w - offset[0], 
-                                               (y - tile[1]) * tile_h - offset[1]))
+            for reg in regionDiff(vreg, breg):
+                for row in observer(reg).rows():
+                    for val, (x, y) in row.cells():
+                        surf.blit(self.imgs[val], ((x - tile[0]) * tile_w - offset[0], 
+                                                   (y - tile[1]) * tile_h - offset[1]))
             for (x, y), val in self.bufdirty.items():
                 surf.blit(self.imgs[val], ((x - tile[0]) * tile_w - offset[0], 
                                            (y - tile[1]) * tile_h - offset[1]))
         self.bufdirty = {}
-        screenreg = Region(vreg.x, vreg.y, vreg.w-1, vreg.h-1)
+        screenreg = Region(vreg.x + 1, vreg.y + 1, vreg.w-2, vreg.h-2)
         if self.watch: self.world.unregister_watch(self.watch)
         self.watch = self.world.register_watch(screenreg, self.dirty_buf_cb)
-        self.buf = (self.x, self.y, surf.copy(), screenreg)
+        self.buf = (self.x, self.y, surf, screenreg)
     def dirty_buf_cb(self, x, y, newval):
         self.bufdirty[(x, y)] = newval
+    def get_load_requests(self):
+        if self.buf == None: return set()
+        loadrad = 66
+        w, h = self.buf[2].get_size()
+        tile_w, tile_h = self.world.tile_size
+        (minx, maxx), (miny, maxy) = self.world.chunk_region(
+            Region((self.buf[0] - loadrad) // tile_w,
+                   (self.buf[1] - loadrad) // tile_h,
+                   (w + 2*loadrad) // tile_w,
+                   (h + 2*loadrad) // tile_h))
+        toload = []
+        for x in range(minx, maxx):
+            for y in range(minx, maxx):
+                if not self.world.is_loaded((x, y)):
+                    toload.append((x, y))
+                if len(toload) > 3:
+                    return {self.world.aload(chunk) for chunk in toload}
+        return {self.world.aload(chunk) for chunk in toload}
