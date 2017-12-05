@@ -1,16 +1,18 @@
-from common import Region, debugPrint
+from common import Region, TileRegistry, debugPrint
 import time, asyncio
 
 class World:
-    def __init__(self, generator, tile_size = (16, 16), chunk_size = (8, 8), chunk_cache_size = 512):
+    def __init__(self, generator, tile_size, chunk_size = (8, 8), chunk_cache_size = 512):
         self.gen = generator
         self.loaded = {}
         self.tile_size = tile_size
         self.chunk_size = chunk_size
         self.chunk_cache_size = chunk_cache_size
         self.watches = {}
-        self.agents = []
+        self.agents = {}
+        self.pending_agents = []
         self.flashed = {}
+        self.claims = {}
     def to_chunk(self, x, y):
         return x // self.chunk_size[0], y // self.chunk_size[1]
     def to_chunk_offset(self, x, y):
@@ -40,73 +42,75 @@ class World:
         self.preload(chunk)
         self.fix_cache_size()
         return self.loaded[chunk][1]
-    class RowView:
-        def __init__(self, row, yc, reg_view):
-            self.row = row
-            self.yc = yc
-            self.xc_range = reg_view.xc_range
-            self.x_range = reg_view.region.x, reg_view.region.x + reg_view.region.w
-            self.world = reg_view.world
-        def cells(self):
-            chunk_w, chunk_h = self.world.chunk_size
-            realy = self.row % chunk_h
-            loader = self.world.load
-            
-            leftxc = self.xc_range[0]
-            chunk_x = leftxc * chunk_w
-            for x in range(self.x_range[0], min(self.x_range[1], chunk_x + chunk_w)):
-                realx = x % chunk_w
-                yield loader((leftxc, self.yc))[realx][realy], (x, self.row)
-            
-            rightxc = self.xc_range[1] - 1
-            if rightxc > leftxc:
-                chunk_x = rightxc * chunk_w
-                for x in range(max(self.x_range[0], chunk_x), self.x_range[1]):
-                    realx = x % chunk_w
-                    yield loader((rightxc, self.yc))[realx][realy], (x, self.row)
-                
-            for xc in range(self.xc_range[0] + 1, self.xc_range[1] - 1):
-                chunk_x = xc * chunk_w
-                for x in range(chunk_x, chunk_x + chunk_w):
-                    realx = x % chunk_w
-                    yield loader((xc, self.yc))[realx][realy], (x, self.row)
+    def look_at(self, x, y):
+        ox, oy = self.to_chunk_offset(x, y)
+        return self.load(self.to_chunk(x, y))[ox][oy]
     class RegionView:
         def __init__(self, region, world):
             self.world = world
             self.xc_range, self.yc_range = world.chunk_region(region)
             self.region = region
-        def rows(self):
+        def cells(self):
             chunk_w, chunk_h = self.world.chunk_size
+            loader = self.world.load
             for yc in range(*self.yc_range):
                 chunk_y = yc * chunk_h
-                for y in range(max(chunk_y, self.region.y),
-                               min(chunk_y + chunk_h, self.region.y + self.region.h)):
-                    yield World.RowView(y, yc, self)
+                y_range = max(chunk_y, self.region.y), min(chunk_y + chunk_h, self.region.y + self.region.h)
+                for xc in range(*self.xc_range):
+                    chunk_x = xc * chunk_w
+                    x_range = max(self.region.x, chunk_x), min(chunk_x + chunk_w, self.region.x + self.region.w)
+                    chunk_data = loader((xc, yc))
+                    for x in range(*x_range):
+                        col = chunk_data[x % chunk_w]
+                        for y in range(*y_range):
+                            yield col[y % chunk_h], (x, y)
     def observe(self, region):
         return World.RegionView(region, self)
+    def set_tile(self, x, y, tile):
+        chunk = self.to_chunk(x, y)
+        ox, oy = self.to_chunk_offset(x, y)
+        self.load(chunk)[ox][oy] = tile.num
+        self.tile_flash(x, y, tile.num)
+        self.wake_around(x, y)
     def register_watch(self, region, cb):
         self.watches[region] = cb
         return region
     def unregister_watch(self, region):
         del self.watches[region]
     def add(self, agent):
-        self.agents.append(agent)
+        self.pending_agents.append(agent)
     def step(self):
+        for x, y in self.flashed: self.wake_around(x, y)
         for region, cb in self.watches.items():
             for (x, y), i in self.flashed.items():
                 if region.x < x < region.x + region.w and region.y < y < region.y + region.h:
                     offx, offy = self.to_chunk_offset(x, y)
-                    cb(x, y, self.load(self.to_chunk(x, y))[offx][offy])
-        newagents = []
-        for agent in self.agents:
-                newagents.append(agent)
-                agent.step(self)
-        self.agents = newagents
+                    cb(x, y, i)
+        num_agents_pending = len(self.pending_agents)
+        self.agents, self.pending_agents = {(a.x, a.y):a for a in self.pending_agents}, []
+        if num_agents_pending != len(self.agents):
+            debugPrint("Agent overlap, {} lost".format(num_agents_pending - len(self.agents)))
+        for agent in self.agents.values():
+            agent.step(self)
+        self.claims = {}
     async def prepare_step(self):
-        coroutines = [agent.prepare_step(self) for agent in self.agents]
+        coroutines = [agent.prepare_step(self) for agent in self.agents.values()]
         completed, pending = await asyncio.wait(coroutines)
-    def tile_flash(self, x, y, i):
+    def tile_flash(self, x, y, i, with_unflash = True):
         for region, cb in self.watches.items():
             if region.x < x < region.x + region.w and region.y < y < region.y + region.h:
                 cb(x, y, i)
-        self.flashed[(x, y)] = i
+        offx, offy = self.to_chunk_offset(x, y)
+        if with_unflash:
+            self.flashed[(x, y)] = self.load(self.to_chunk(x, y))[offx][offy]
+        self.wake_around(x, y)
+    def claim(self, x, y, owner, priority):
+        coords = x, y
+        self.claims[coords] = max((priority, owner), self.claims.get(coords, (-float('inf'), None)))
+    def has_claim(self, x, y, owner):
+        return self.claims.get((x, y), (None, None))[1] == owner
+    def wake_around(self, x, y):
+        for val, (rx, ry) in self.observe(Region(x-1, y-1, 3, 3)).cells():
+            cls = TileRegistry[val]
+            if cls in TileRegistry.wake[(rx-x, ry-y)]:
+                cls.wake(self, rx, ry)

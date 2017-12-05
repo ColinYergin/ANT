@@ -1,7 +1,46 @@
 from collections import namedtuple
 import sys
+import pygame
+
+tilesize = 16, 16
 
 Region = namedtuple('Region', ['x', 'y', 'w', 'h'])
+
+def singleton(cls):
+    return cls()
+
+@singleton
+class TileRegistry:
+    __slots__ = ('tiles','wake')
+    def __init__(self):
+        self.tiles = []
+        self.wake = {(x, y):set() for x in range(-1, 2) for y in range(-1, 2)}
+    def add(self, cls):
+        cls.num = len(self.tiles)
+        self.tiles.append(cls)
+    def __getitem__(self, key):
+        return self.tiles[key]
+
+class Tile:
+    num = None
+    @classmethod
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        try:
+            color = cls.color
+            cls.img = pygame.Surface(tilesize)
+            cls.img_rect = cls.img.fill(color,)
+            TileRegistry.add(cls)
+            for x, y in cls.awaken:
+                TileRegistry.wake[(-x, -y)] |= {cls}
+        except AttributeError:
+            pass
+    @classmethod
+    def matches(cls, othercls):
+        return issubclass(cls, othercls)
+
+def tv_match(tv, cls):
+    return issubclass(TileRegistry[tv], cls)
 
 def debugPrint(*al, **ad):
     print(*al, **ad)

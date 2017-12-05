@@ -1,10 +1,9 @@
 import world
-from common import Region, debugPrint, regionDiff
+from common import Region, debugPrint, regionDiff, TileRegistry
 
 class Camera:
-    def __init__(self, world, imgs, coords = (0, 0), centerin = (0, 0)):
+    def __init__(self, world, coords = (0, 0), centerin = (0, 0)):
         self.world = world
-        self.imgs = imgs
         self.x, self.y = (coords[0] - centerin[0]//2, coords[1] - centerin[1]//2)
         self.buf = None
         self.bufdirty = {}
@@ -21,27 +20,26 @@ class Camera:
         observer = self.world.observe
         vreg = Region(*tile, w // tile_w + 1, h // tile_h + 1)
         if self.buf == None:
-            for row in observer(vreg).rows():
-                for val, (x, y) in row.cells():
-                    surf.blit(self.imgs[val], ((x - tile[0]) * tile_w - offset[0], 
-                                               (y - tile[1]) * tile_h - offset[1]))
+            for val, (x, y) in observer(vreg).cells():
+                surf.blit(TileRegistry[val].img, ((x - tile[0]) * tile_w - offset[0], 
+                                                  (y - tile[1]) * tile_h - offset[1]))
         else:
             bx, by, bs, breg = self.buf
             surf.blit(bs, (bx - self.x, by - self.y))
             
             for reg in regionDiff(vreg, breg):
-                for row in observer(reg).rows():
-                    for val, (x, y) in row.cells():
-                        surf.blit(self.imgs[val], ((x - tile[0]) * tile_w - offset[0], 
-                                                   (y - tile[1]) * tile_h - offset[1]))
+                for val, (x, y) in observer(reg).cells():
+                    surf.blit(TileRegistry[val].img, ((x - tile[0]) * tile_w - offset[0], 
+                                                      (y - tile[1]) * tile_h - offset[1]))
             for (x, y), val in self.bufdirty.items():
-                surf.blit(self.imgs[val], ((x - tile[0]) * tile_w - offset[0], 
-                                           (y - tile[1]) * tile_h - offset[1]))
+                surf.blit(TileRegistry[val].img, ((x - tile[0]) * tile_w - offset[0], 
+                                                  (y - tile[1]) * tile_h - offset[1]))
         self.bufdirty = {}
-        screenreg = Region(vreg.x + 1, vreg.y + 1, vreg.w-2, vreg.h-2)
+        bufreg = Region(vreg.x + 1, vreg.y + 1, vreg.w-2, vreg.h-2)
+        watchreg = Region(vreg.x - 3, vreg.y - 3, vreg.w + 5, vreg.h + 5)
         if self.watch: self.world.unregister_watch(self.watch)
-        self.watch = self.world.register_watch(screenreg, self.dirty_buf_cb)
-        self.buf = (self.x, self.y, surf, screenreg)
+        self.watch = self.world.register_watch(watchreg, self.dirty_buf_cb)
+        self.buf = (self.x, self.y, surf, bufreg)
     def dirty_buf_cb(self, x, y, newval):
         self.bufdirty[(x, y)] = newval
     def get_load_requests(self):
